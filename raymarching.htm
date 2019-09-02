@@ -1,0 +1,956 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<style type="text/css">
+    body{margin:0px;}
+    canvas{margin:0px;}
+</style>
+
+<script type="text/javascript">
+
+// Ray Marched Lattice
+// Source - Raymarching.com
+// Author - Gary "Shane" Warne
+// eMail - mail@Raymarching.com, mail@Labyrinth.com
+// Last update: 10th May, 2015
+
+// WebGL code containing a shader script to raymarch a lattice structure - with reflections, shadows, and bump 
+// mapping. There's a bit of code here, so if the lattice is all you're interested in, go straight to the distance 
+// function. The camera has been modified slightly to weave in and out of the columns using a sinusoidal function.
+// There are more sophisticated ways to go about it, like using a Bezier path, but it does the job.
+//
+// Also contained is one of the fastest 2nd-order-distance, 3D Voronoi-esque shader functions you're likely to 
+// come across. "No Way!" OK, probably not, and the function probably doesn't adhere to the strictest comp-sci, 
+// 3D Voronoi pattern standards. Nevertheless, it uses a fraction of the processing instructions of the standard 
+// function that does the rounds, and it's aesthetically passable, so if someone out there can code a "conceptionally" 
+// faster one, I'd definitely like to see it... because then I'd have to pull out my really fast one. ;-)
+//
+// I see a lot of raymarching examples on the net with the Voronoi perturbations placed directly inside the distance 
+// function, which tends to result in dismal frame rates. In an ideal world with super fast GPUs, the distance function 
+// is where I'd want to put them. However, as you can see from this example, applying Voronoi surface details via bump 
+// mapping is a pretty good compromise, and far, far less expensive. Oh, and by the way, with a little cost cutting, 
+// one layer of this particular Voronoi function can be used in the distance function, anyway.
+//
+// The following setup code is not robust... at all. It seems to work though. I'm not going to bother explaining it, 
+// because I'm only interested in the shader code, and it does what it's supposed to do, which is set up WebGL and 
+// present a screen - in the form of two triangles - at, hopefully, frequent intervals.
+//
+// Mustakz... Mistakes - I could almost guarantee you'll find a few in amongst this lot. Therefore, if you come 
+// across any (grammatical, syntactic, conceptual, etc), feel free to let me know about it. If you're aware of 
+// simple, algorithmic changes that can me made to vastly impove things, even better. :)
+
+window.onload = main;
+
+var gl;
+var time = 0.0;
+var timeLocation;
+var start = 0.0;
+
+var fps = 0;
+var fpstime = 0.0;
+
+var surfacePosition;
+
+// Function that grabs a shader stored as a page script
+// and compiles it based on the MIME type.
+// 
+// This script is all over the web, and may have originated here:
+// http://learningwebgl.com/
+function getShader(gl, id) {
+      var shaderScript = document.getElementById(id);
+      if (!shaderScript) {
+          return null;
+      }
+
+      var str = "";
+      var k = shaderScript.firstChild;
+      while (k) {
+          if (k.nodeType == 3)
+              str += k.textContent;
+          k = k.nextSibling;
+      }
+
+      var shader;
+      if (shaderScript.type == "x-shader/x-fragment") {
+          shader = gl.createShader(gl.FRAGMENT_SHADER);
+      } else if (shaderScript.type == "x-shader/x-vertex") {
+          shader = gl.createShader(gl.VERTEX_SHADER);
+      } else {
+          return null;
+      }
+
+      gl.shaderSource(shader, str);
+      gl.compileShader(shader);
+
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          alert(gl.getShaderInfoLog(shader));
+          return null;
+      }
+
+      return shader;
+  }
+
+
+function main() {
+
+    // There aren't too many lines of code here, but tracking it all down, then putting it in the right order wasn't 
+    // exactly the highlight of my day. Hopefully, it can save you the same headaches.
+  
+    // Get A WebGL context
+    var canvas = document.getElementById("canvas");
+    gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');// 
+	canvas.width = window.innerWidth;
+	canvas.height = window.innerHeight;
+	canvas.className = "fullscreen"
+
+
+	document.body.scrollTop = 0; // <-- pull the page back up to the top
+	document.body.style.overflow = 'hidden'; // <-- relevant addition	
+
+    if (!gl) {
+        alert("OpenGL could not be initialized.");
+        document.getElementById('heading').innerHTML = "WebGL - Initialization Error";
+        document.getElementById('info').innerHTML = "WebGL could not be initialized. Check that your browser supports WebGL.";
+        return;
+    }
+            
+    gl.getExtension('OES_standard_derivatives'); 
+
+    // Setup GLSL program.
+
+    // Make the shaders.
+    // The getShader function runs the compiler.	
+    var vertexShader = getShader(gl, "2d-vertex-shader");
+    var fragmentShader = getShader(gl, "2d-fragment-shader");
+
+
+    var program = gl.createProgram();
+
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+    
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        // An error occurred while linking
+        document.getElementById('heading').innerHTML = "WebGL - Shader Initialization Error";
+        document.getElementById('info').innerHTML = "WebGL could not initialize one, or both, shaders.";
+        gl.deleteProgram(program);
+        return;
+    }
+
+    gl.useProgram(program);
+
+    // Look up where the vertex data needs to go.
+    var positionLocation = gl.getAttribLocation(program, "a_position");
+
+    // Set the resolution
+    var resolutionLocation = gl.getUniformLocation(program, "resolution");
+    gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+
+    var mouseLocation = gl.getUniformLocation(program, "mouse");
+    gl.uniform4f(mouseLocation, 0.0, 0.0, 0.0, 0.0);
+
+    //surfacePosition = gl.getUniformLocation(program, "surfacePosition");
+    //gl.uniform2f(surfacePosition, canvas.width, canvas.height);
+
+    //var temp = gl.getUniformLocation(program, "gl_FragCoord");
+    var mx = Math.max(canvas.width, canvas.height);
+    var xdivmx = canvas.width/mx; //Coordinates range from [-1,1].
+    var ydivmx = canvas.height/mx;
+    var screenRatioLocation = gl.getUniformLocation(program, "screenRatio");
+    gl.uniform2f(screenRatioLocation, xdivmx, ydivmx);
+
+
+    timeLocation = gl.getUniformLocation(program, "time");  
+    gl.uniform1f(timeLocation, time);
+
+
+    // Create a buffer and put a single clipspace rectangle in
+    // it (2 triangles).
+    var buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1.0, -1.0,
+     1.0, -1.0,
+    -1.0,  1.0,
+    -1.0,  1.0,
+     1.0, -1.0,
+     1.0,  1.0]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+    // draw
+    //gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Every realtime application needs a frame counter.
+    start = Date.now();
+    render();
+    
+}
+
+// Provides requestAnimationFrame in a cross-browser way. Everone uses these. I think they 
+// come from the original Khronos source.
+window.requestAnimFrame = (function() {
+  return window.requestAnimationFrame ||
+         window.webkitRequestAnimationFrame ||
+         window.mozRequestAnimationFrame ||
+         window.oRequestAnimationFrame ||
+         window.msRequestAnimationFrame ||
+         function(/* function FrameRequestCallback */ callback, /* DOMElement Element */ element) {
+           return window.setTimeout(callback, 1000/60);
+         };
+})();
+
+// Provides cancelRequestAnimationFrame in a cross-browser way.
+window.cancelRequestAnimFrame = (function() {
+  return window.cancelCancelRequestAnimationFrame ||
+         window.webkitCancelRequestAnimationFrame ||
+         window.mozCancelRequestAnimationFrame ||
+         window.oCancelRequestAnimationFrame ||
+         window.msCancelRequestAnimationFrame ||
+         window.clearTimeout;
+})();
+
+ 
+function render() {
+
+    // Rendering loop for the WebGL canvas.
+ 
+    var elapsedtime = (Date.now() - start)/1000.0;
+    var framespeed = 1.0;
+    time += framespeed*elapsedtime;
+    gl.uniform1f(timeLocation, time);
+
+    //gl.clearColor(1.0, 0.0, 0.0, 1.0)
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    fps++;
+    fpstime += elapsedtime;
+    if(fpstime>=1.0){
+
+        fpstime -= 1.0;
+        fps = 0;
+
+    }
+
+    start = Date.now();
+	canvas.width = window.innerWidth;
+	canvas.height = window.innerHeight;
+
+    window.requestAnimationFrame(render, canvas);
+ 
+}
+
+</script>
+<!-- Vertex Shader -->
+<script id="2d-vertex-shader" type="x-shader/x-vertex">
+attribute vec2 a_position;
+varying vec2 surfacePosition;
+uniform vec2 screenRatio;
+
+void main() {
+   surfacePosition = a_position*screenRatio;
+   gl_Position = vec4(a_position, 0, 1);
+}
+</script>
+<!-- Fragment Shader -->
+<script id="2d-fragment-shader" type="x-shader/x-fragment">
+//#extension GL_OES_standard_derivatives : enable 
+
+#ifdef GL_ES
+precision mediump float;
+#endif
+
+uniform float time;
+uniform vec2 resolution;
+uniform vec4 mouse;
+
+//varying vec2 surfacePosition;
+
+// Lattice Structure
+// Source - Raymarching.com
+// Author - Gary "Shane" Warne
+// eMail - mail@Raymarching.com, mail@Labyrinth.com
+// Last update: 10th May, 2015
+//
+// All of the code on this page has been written a gazillion times by a zillion different people. There is nothing new here. Screen coordinates, 
+// camera setup, ray setup, raymarch, lighting, screen render, and done. Use it for whatever you purpose you like.
+//
+// Anyway, I'm genuinely grateful for all the code various people have made public over at "Shadertoy.com," which is run by that RGBA guy, Inigo Quilez,
+// aka IQ. "Shader Toy" is an apt description for that site, because as a person who loves graphic-related snippets, I'm like a kid in a toy store
+// over there. I guess you needed to have been on the net 15, or even 10, years ago trying to hunt down demo effects code to really appreciate what's 
+// being offered at "ShaderToy.com." Fantastic stuff.
+
+#define PI 3.1415926535898 // Always handy.
+
+#define REFLECTION
+#define ALIEN_LIGHTS // Lattice with lights. Comment it out to reveal Voronoi detailing in its purer form.
+
+// Epsilon value..
+const float eps = 0.005;
+
+// Gloable variables for the raymarching algorithm.
+const int maxIterations = 64; // This is a pretty simple structure, so 64 iterations will get the job done.
+const int maxIterationsRef = 16; // The reflections are low priority, so just 16 iterations will do.
+const int maxIterationsShad = 24; // Shadow iterations. Better with 32, but fewer is faster.
+const float stepScale = 0.75;
+const float stepScaleRef = 0.95;
+const float stopThreshold = 0.005; // I'm not quite sure why, but thresholds in the order of a pixel seem to work better for me... most times. 
+
+
+// We use the light position in different areas, as well as the surface normal, so I've sacrificed readability and globalized them to save repetition.
+// GPUs are lightning fast these days, but once you start trying to include shadows, reflections, ambient occlusion, and so forth, things start slowing
+// down, which means you have to go back to saving cycles here and there. Writing code under time constaints that's feature-rich, short, readable, 
+// robust and fast? That'd be nice. It never happens to me, but it would be nice. :)
+vec3 lp = vec3(0.);
+vec3 surfNormal = vec3(0.);
+vec3 ref = vec3(0.);
+vec3 lookAt = vec3(0.);
+vec3 camPos = vec3(0.);
+
+// The following are pretty handy for all sorts of situations, but in this case, they're
+// used for rotating camera.
+
+// 2x2 matrix rotation.
+mat2 rot2( float angle ){
+	
+	float c = cos( angle );
+	float s = sin( angle );
+	
+	return mat2( c, s,-s, c	);
+}
+
+// 3x3 matrix rotation -  Pitch and  yaw.
+mat3 rot3xy( vec2 angle ){
+	vec2 c = cos( angle );
+	vec2 s = sin( angle );
+	
+	return mat3(
+		c.y      ,  0.0, -s.y,
+		s.y * s.x,  c.x,  c.y * s.x,
+		s.y * c.x, -s.x,  c.y * c.x
+	);
+}
+
+float smoothFract(float x){
+    x = fract(x);
+    return min(x, x*(1.-x)*5.);
+}
+
+// Distance field equation for a sphere.
+float sphere(in vec3 p, in vec3 centerPos, float radius){
+
+	return length(p-centerPos) - radius;
+}
+
+// Distance field equation for a cube.
+float box(vec3 p, vec3 b){ 
+    
+	vec3 d = abs(p) - b;
+
+	return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));
+}
+
+
+float boxFast( vec3 p, vec3 b )
+{
+    vec3 d = max(abs(p) - b, 0.);
+    return  sqrt(dot(d, d));
+    
+}
+
+float roundedCubeFast( vec3 p, vec3 b , float edge)
+{
+    vec3 d = max(abs(p) - b, 0.);
+    return  sqrt(dot(d, d)) - edge;
+    
+}
+
+// Distance field equation for a rounded cube.
+float roundedCube(vec3 p, vec3 boxExtents, float edgeRadius ){
+    
+	return length(max(abs(p)-boxExtents + vec3(edgeRadius), 0.0 )) - edgeRadius;
+}
+
+// Standard hash algorithm that you'll see all over the place.
+vec3 hash33(vec3 p) { 
+
+    // Faster, but doesn't disperse things quite as nicely as the block below it. However, when framerate
+    // is an issue, and it often is, this is the one to use. Basically, it's a tweaked amalgamation I put
+    // together, based on a couple of other random algorithms I've seen around... so use it with caution,
+    // because I make a tonne of mistakes. :)
+    //float n = sin(dot(p, vec3(7, 157, 113)));    
+    //return fract(vec3(2097152, 262144, 32768)*n)*2.-1.; // return fract(vec3(64, 8, 1)*32768.0*n)*2.-1.; 
+
+    // I'll assume this comes from IQ, of "ShaderToy.com."
+    p = vec3( dot(p,vec3(127.1,311.7, 74.7)),
+		      dot(p,vec3(269.5,183.3,246.1)),
+		      dot(p,vec3(113.5,271.9,124.6)));
+
+    return fract(sin(p)*43758.5453)*2.0-1.0;
+
+}
+
+// I commented a while back that I knew of a way to drastically improve the speed of the standard, 3D-Voronoi shader 
+// function that everyone uses. Eventually, someone wrote to me and said they had a difficult time believing my claim.
+// "Faster, maybe, but not 'drastically' faster..." - I guess it was a little difficult to believe, since the ones getting 
+// around are pretty quick... but not as quick as this one. :) And just to provoke the guy a little more: There's an even
+// faster way. ;-)
+//
+// OK, the function doesn't produce aesthetically perfect Voronoi patterns, so Voronoi-esqe would probably be a better way 
+// to describe it. Nevertheless, you can use the function for all sorts of things, and get away with it... or to put it another 
+// way, at least you can use it for something interesting without bringing your frame rate to a screeching halt. You can't do 
+// that on an average system with the 27-tap version. In fact, even the square-looking, 8-tap Voronoi function doesn't really 
+// perform well enough. Anyway, that's enough rambing. Here's the routine, and a rough description:
+//
+// Instead of partitioning space into cubes, partition it into its simplex form, namely tetrahedrons. The closest vertice 
+// will be one of the tetrahedral corners. The really cool thing is that the second closest point will also be one of the 
+// corners. There's a bit more involved, but that's the basic idea. If you're familiar with a standard 3D Voronoi function, 
+// and the standard 3D Simplex function, then the following shouldn't be too much of a stretch.
+//
+// Author: Gary "Shane" Warne
+// Credits: Ken Perlin, the inventor of simplex noise, of course. Stefan Gustavson's paper - "Simplex Noise Demystified,"
+// IQ, other "ShaderToy.com" people, etc.
+float tetraVoronoi( in vec3 p )
+{
+    // Skewing the grid, then determining the first vertice.
+    vec3 i  = floor(p + dot(p, vec3(0.333333)) );
+    vec3 p0 = p - i + dot(i, vec3(0.166666)) ;
+
+    // The following is a clever way to determine which tetrahedron we're in, which in turn can be used to calculate the 
+    // two non-fixed vertices. Partitioning a volume into tetrahedrons, then calculating the corners is a fiddly, but doable 
+    // math problem. You'll see it done time and again in 3D simplex noise algorithms, so I won't waste your time explaining 
+    // it here. Just know that it works. :)
+    
+    // This takes away the necessary branching, when determining which side of two planes the point is on. This is my take
+    // on it, but I got the idea from some anoymous internet person. I've seen something similar done in 3D voxel traversal,
+    // so perhaps that's where it originated. 
+    vec3 i1 = step(0., p0-p0.yzx); 
+    vec3 i2 = max(i1, 1.0-i1.zxy);
+    i1 = min(i1, 1.0-i1.zxy);    
+    
+    // The other three vertices. 
+    vec3 p1 = p0 - i1 + 0.166666;
+    vec3 p2 = p0 - i2 + 0.333333; 
+    vec3 p3 = p0 - 0.5; 
+    
+    // Now we have all four vertices, which means we can do all sorts of cool things, but for now, I'm sticking to Voronoi patterns.   
+
+    // This is probably the only place the function differs conceptually from the minimum-distance, cubic Voronoi function.
+    // Here, we're using the standard 3D simplex falloff.
+    vec4 v = max(0.5 - vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)), 0.0)*2.;
+    
+    // Dotting the corners with a random vector generated for each corner, in order to determine the weighted 
+    // contribution distribution... Kind of. Just for the record, you can do a non-gradient, value version that
+    // works almost as well... Maybe, for another time.
+    //
+    // By the way, normalizing the hash gradients didn't seem to make an aesthetic difference, so I didn't waste the cyles.
+    vec4 d = vec4(dot(p0, hash33(i)), dot(p1, hash33(i + i1)), dot(p2, hash33(i + i2)), dot(p3, hash33(i + 1.)));
+
+
+    // return dot(d*0.707, v*v*v*2.5)+0.5; // Regular simplex noise... Not really, but close enough. There's your bonus. :)
+
+    // For all intents and purposes, this vector holds the weighted values from our point in space to each of the vertices.
+    // Now, all we have to do is find the two maximum values, or just the one, if that's all you're interested in. 
+    d=(d+1.)*v*0.707; // It might need a bit of tweaking, but it'll do, for now.
+    
+    // Believe it or not, this mess simply determines the highest value in the 4D vector "d" (easy, and neat), and the 
+    // second highest value (not so easy, and ugly). In fact, I'm sure there's a better way to do this. Some may be wondering
+    // why I'm not trying to find the minimums. I could change the vector "v" above to arrange it that way, but by leaving it 
+    // alone, I can get a simplex noise value as well... Something like that, anyway.
+    float maxxy = max(d.x, d.y);
+    float maxzw = max(d.z, d.w);
+    float maxmins = max(min(d.x, d.y), min(d.z, d.w));   
+    float minmaxs = min(maxxy, maxzw); 
+   
+    return  max(maxxy, maxzw) - max(maxmins, minmaxs); // Maximum value minus second highest value to give that cool beveled Voronoi look.
+    //return  max(maxxy, maxzw); // Maximum, or regular value. 
+
+}
+
+// The bump mapping function that gives the surface its bumpiness.
+float bumpFunction(in vec3 p){
+     
+     #ifdef ALIEN_LIGHTS
+     float vor = tetraVoronoi(p*3.); // Fast 3D Voronoi function.
+     return smoothFract(vor*2.); // Like a fract function, but smooth. It's a great way to add a little variety to a noise function.
+     #else
+     return tetraVoronoi(p*5.); // Fast 3D Voronoi function.
+     #endif
+    
+}
+
+// Bumpmapping uses similar techniques to those used when obtaining the surface normal. Use the surface point "p" and epsilon value "eps" to obtain 
+// the gradient along each of the individual axes (f(p.x+eps)-f(p.x), etc). That should give you a scaled representation of (df/dx, df/dy, df/dz), 
+// which can be scaled down to a desirable factor. However, this time, instead of indexing the distance function, we're indexing into a bump function - 
+// which can be anything that takes in a 3D point and returns a value. The function can also use a texture, which speedwise, can often be 
+// preferable, but for now we're using a 3D function. 
+//
+// After the scaled gradient of the bump mapping function is attained, we simply combine it with the surface normal "nor" using a "bump factor"
+// - which, oddly enough, controls the bumpiness of the surface - normalize it, then return the new bumped, or perturbed, normal.
+//
+// I should probably point out that this is not the only way to bump map a surface. In fact, there are a few. For speed and efficiency, I prefer to 
+// index into a 2D texture (or 2D function), but that tends to involve textures and uv-mapping, which I didn't want to cover just yet, so I've taken 
+// a different route. However, I'll be dealing with bump mapping from textures next.
+vec3 doBumpMap( in vec3 p, in vec3 nor, float bumpfactor ){
+
+    //p = mod(p,1.0)-0.5; // If you want all the objects to be bump mapped with the same pattern, uncomment this.
+    
+	float ref = bumpFunction( p );
+	// Note: To save on calculations, we're stepping to just one side of the position "p," rather than both.
+    vec3 grad = vec3( bumpFunction(vec3(p.x+eps, p.y, p.z))-ref,
+                      bumpFunction(vec3(p.x, p.y+eps, p.z))-ref,
+                      bumpFunction(vec3(p.x, p.y, p.z+eps))-ref )/eps;
+
+                          
+    // I tend to favor subtle bump mapping, so since this line has a subtle effect already, I have a bad habit of leaving it out. 
+    // However, it should definitely be there, so if you do notice it missing in my other work, send me an email letting me know
+    // what a lazy dumbass I am. :)              
+    grad -= nor*dot(nor, grad);
+    
+    // Note the "-" sign, instead of the "+" one. It all depends on how the "grad" vector above is produced.
+    // A lazy way to see if you've done it right is a good old-fashioned visual check.                     
+    return normalize( nor - bumpfactor*grad );
+	
+}
+
+// I remember trying to find a faster smooth minimum function all over the net, then found this over at
+// "IQuilezles.org" I should save myself the time in future, and check there first. :)
+float smoothMinP( float a, float b, float smoothing ){
+
+    float h = clamp( 0.5+0.5*(b-a)/smoothing, 0.0, 1.0 );
+    return mix( b, a, h ) - smoothing*h*(1.0-h);
+}
+    
+// This is the raymarched scene that gets called multiple times from the raymarching procedure, which means adding detail can slow things right down.
+float scene(in vec3 p){
+
+    // The following is probably one of my favorite raymarching moves. This tiny snippet is responsibe for the infinite object repetition that
+    // you see in so many raymarched scenes. There are a lot of different ways to look at it, but in a way, you're voxelizing the entire 3D space
+    // into cubes of one unit dimension, then placing a copy of your object (in this case, a box) right in the center of it. Obviously, the 
+    // object you place in it has to fit, and you'll see that the box below does. By the way, no one's forcing you to voxelize to 1 unit dimension.
+    // For instance, "p = mod(p, 2.0) - 1.0" would work also, but your boxes would be twice as far apart, and appear darker, since your light would
+    // now be further away. Try it and see.
+
+    p = fract(p) - 0.5;
+    
+    // A ray marched lattice is almost a right of passage, similar to coding a tunnel, 2D plasma, etc. I love it 
+    // because you get a lot of "bang for you buck." The following aligns 3 thin boxes to each of the three axes. 
+    // Taking the overall minimum produces a 3D cross. Repeating the crosses over the entire space (with the 
+    // repetition line above) makes the lattice. Simple. Change the "0.5" value to something smaller, like "0.3," 
+    // to see a field of crosses.
+    
+    float d0 = roundedCubeFast(p, vec3(0.5, 0.08, 0.08), 0.035);
+    float d1 = roundedCubeFast(p, vec3(0.08, 0.5, 0.08), 0.035);
+    float d2 = roundedCubeFast(p, vec3(0.08, 0.08, 0.5), 0.035); 
+
+    // You could try a smooth minium function here, but the hard minimum looks fine, in this instance.
+	//return min(min(d0, d1), d2);
+	return smoothMinP(smoothMinP(d0, d1, 0.25), d2, 0.25);
+}
+
+// Obtain the surface normal at the surface point "p."
+vec3 getNormal(in vec3 p) {
+	
+	return normalize(vec3(
+		scene(vec3(p.x+eps,p.y,p.z))-scene(vec3(p.x-eps,p.y,p.z)),
+		scene(vec3(p.x,p.y+eps,p.z))-scene(vec3(p.x,p.y-eps,p.z)),
+		scene(vec3(p.x,p.y,p.z+eps))-scene(vec3(p.x,p.y,p.z-eps))
+	));
+
+    /*
+    // Shorthand version of the above. The fewer characters used almost gives the impression that it involves fewer calculations. Almost.
+	vec2 e = vec2(eps, 0.);
+	return normalize(vec3(scene(p+e.xyy)-scene(p-e.xyy), scene(p+e.yxy)-scene(p-e.yxy), scene(p+e.yyx)-scene(p-e.yyx) ));
+    */
+    
+    /*
+    // If speed is an issue, here's a slightly-less-accurate, 4-tap version. If fact, visually speaking, it's virtually the same, so on a
+    // lot of occasions, this is the one I'll use. However, if speed is really an issue, you could take away the "normalization" step, then 
+    // divide by "eps," but I'll usually avoid doing that.
+    float ref = scene(p);
+	return normalize(vec3(
+		scene(vec3(p.x+eps,p.y,p.z))-ref,
+		scene(vec3(p.x,p.y+eps,p.z))-ref,
+		scene(vec3(p.x,p.y,p.z+eps))-ref
+	)); 
+	*/
+	
+	/*
+	// The tetrahedral version, which does involve fewer calculations, but doesn't seem as accurate on some surfaces... I could be wrong,
+	// but that's the impression I get.
+	vec2 e = vec2(-0.5*eps,0.5*eps);   
+	return normalize(e.yxx*scene(p+e.yxx)+e.xxy*scene(p+e.xxy)+e.xyx*scene(p+e.xyx)+e.yyy*scene(p+e.yyy)); 
+	*/
+}
+
+// Raymarching.
+float rayMarching( vec3 origin, vec3 dir, float start, float end ) {
+
+    float sceneDist = 1e4;
+	float rayDepth = start; // Ray depth. "start" is usually zero, but for various reasons, you may wish to start the ray further away from the origin.
+	for ( int i = 0; i < maxIterations; i++ ) {
+		sceneDist = scene( origin + dir * rayDepth ); // Distance from the point along the ray to the nearest surface point in the scene.
+
+        // Irregularities between browsers have forced me to use this logic. I noticed that Firefox was interpreting two "if" statements inside a loop
+        // differently to Chrome, and... 20 years on the web, so I guess I should be used to this kind of thing.
+		if (( sceneDist < stopThreshold ) || (rayDepth >= end)) {
+		
+		    // (rayDepth >= end) - The casted ray has proceeded past the end zone, so it's time to return the maximum distance.
+		     
+		    // (sceneDist < stopThreshold) - The distance is pretty close to zero, which means the point on the ray has effectively come into contact 
+		    // with the surface. Therefore, we can return the distance, which can be used to calculate the surface point.
+			
+			break;
+		}
+		// We haven't hit anything, so increase the depth by a scaled factor of the minimum scene distance.
+		rayDepth += sceneDist * stepScale;
+
+	}
+
+	// I'd normally arrange for the following to be taken care of prior to exiting the loop, but Firefox won't execute anything before
+	// the "break" statement. Why? I couldn't say. I'm not even game enough to put more than one return statement.	
+	//
+	// Normally, you'd just return the rayDepth value only, but for some reason that escapes my sense of logic - and everyone elses, for 
+	// that matter, adding the final, infinitessimal scene distance value (sceneDist) seems to reduce a lot of popping artifacts. If 
+	// someone could put me out of my misery and prove why I should either leave it there, or get rid of it, it'd be appreciated.
+	if ( sceneDist >= stopThreshold ) rayDepth = end;
+	else rayDepth += sceneDist;
+		
+	// We've used up our maximum iterations. Return the maximum distance.
+	return rayDepth;
+}
+
+// Raymarching reflections. It appears that GPUs won't do loops with variable iterations, but reflections are expensive, so you need to use fewer
+// iterations. Therefore, I've had to make an almost duplicate version of the raymarching function above. Surely, there's a better way, but at least 
+// it works. Reflection are a little fiddly, but otherwise easy to implement. Unfortunately, they take up extra iterations that, sometimes, your poor 
+// GPU can't handle.
+//
+// Anyway, once you've hit a surface point in the scene, the surface point will become the new origin, and the normalized reflected vector 
+// will become the new ray direction (dir). Feed those into the function below, then use the resultant distance to obtain the surface the reflected 
+// ray hits (if any). Put that result into the light equation, then add a portion of the color to the color you've already attained from the 
+// first raymarching pass. Simple... once you've done it a few times and get used to the process.
+float rayMarchingReflections( vec3 origin, vec3 dir, float start, float end ) {
+	
+	float sceneDist = 1e4;
+	float rayDepth = start; // Ray depth. "start" is usually zero, but for various reasons, you may wish to start the ray further away from the origin.
+	for ( int i = 0; i < maxIterationsRef; i++ ) {
+		sceneDist = scene( origin + dir * rayDepth ); // Distance from the point along the ray to the nearest surface point in the scene.
+
+		if (( sceneDist < stopThreshold ) || (rayDepth >= end)) {
+		
+		    // (rayDepth >= end) - The casted ray has proceeded past the end zone, so it's time to return the maximum distance.
+		     
+		    // (sceneDist < stopThreshold) - The distance is pretty close to zero, which means the point on the ray has effectively come into contact 
+		    // with the surface. Therefore, we can return the distance, which can be used to calculate the surface point.
+			
+			break; 
+		}
+		
+		// We haven't hit anything, so increase the depth by a scaled factor of the minimum scene distance.
+		rayDepth += sceneDist * stepScaleRef;
+
+	}
+	
+
+	// I'd normally arrange for the following to be taken care of prior to exiting the loop, but Firefox won't execute anything before
+	// the "break" statement. Why? I couldn't say. I'm not even game enough to put more than one return statement.	
+	//
+	// Normally, you'd just return the rayDepth value only, but for some reason that escapes my sense of logic - and everyone elses, for 
+	// that matter, adding the final, infinitessimal scene distance value (sceneDist) seems to reduce a lot of popping artifacts. If 
+	// someone could put me out of my misery and prove why I should either leave it there, or get rid of it, it'd be appreciated.
+	if ( sceneDist >= stopThreshold ) rayDepth = end;
+	else rayDepth += sceneDist;
+	
+	// We've used up our maximum iterations. Return the maximum distance.
+	return rayDepth;
+}
+
+// Based on original by IQ - optimized to remove a divide.
+float calculateAO(vec3 p, vec3 n)
+{
+   const float AO_SAMPLES = 5.0;
+   float r = 0.0;
+   float w = 1.0;
+   for (float i=1.0; i<=AO_SAMPLES; i++)
+   {
+      float d0 = i * 0.2; // 1.0/AO_SAMPLES
+      r += w * (d0 - scene(p + n * d0));
+      w *= 0.5;
+   }
+   return 1.0-clamp(r,0.0,1.0);
+}
+
+// I wrote my own soft-shadow code, but didn't like it as much as I like this snippet. It's nice and simple, relatively fast, and 
+// gives decent results. I guess that's why so many people use it.
+//
+// In essence, a surface point is in shadow when an object gets in the way of the light. For hard shadows, you cast a ray from 
+// the surface point (just a little off the surface, to be accurate) to the light position, and if you return a hit, you darken
+// the pixel. The following does something similar, but takes advantage of the fact that you're using a ray marching technique.
+//
+// Instead of only considering whether the point you're shading has another surface directly between it and the light, you consider 
+// all points along the ray by testing how close each point comes within an object on the way to the light (h), and how far the 
+// point on the ray is from your original cast off point (dist). The value "k" is just a fade-off factor that enables you to control 
+// how soft you want the shadows to be. Smaller values give a softer penumbra, and larger values give a more hard edged shadow.
+//
+// You can read more about the following at: http://www.iquilezles.org/www/articles/rmshadows/rmshadows.htm
+
+float softShadow(vec3 ro, vec3 rd, float start, float end, float k){
+
+    float shade = 1.0;
+
+    // The "start" value, or minimum, should be set to something more than the stop-threshold, so as to avoid a collision with 
+    // the surface the ray is setting out from. It doesn't matter how many times I write shadow code, I always seem to forget this.
+    // If adding shadows seems to make everything look dark, that tends to be the problem.
+    float dist = start;
+    float stepDist = end/float(maxIterationsShad);
+
+    // Max shadow iterations - More iterations make nicer shadows, but slow things down. Obviously, the lowest 
+    // number to give a decent shadow is the best one to choose. 
+    for (int i=0; i<maxIterationsShad; i++){
+        // End, or maximum, should be set to the distance from the light to surface point. If you go beyond that
+        // you may hit a surface not between the surface and the light.
+        float h = scene(ro + rd*dist);
+        shade = min(shade, k*h/dist);
+        
+        // What h combination you add to the distance depends on speed, accuracy, etc. To be honest, I find it impossible to find 
+        // the perfect balance. Faster GPUs give you more options, because more shadow iterations always produce better results.
+        // Anyway, here's some posibilities. Which one you use, depends on the situation:
+        // +=h, +=clamp( h, 0.01, 0.25 ), +=min( h, 0.1 ), +=stepDist, +=min(h, stepDist*2.), etc.
+        dist += min(h, stepDist*2.); // The best of both worlds... I think. 
+        
+        // Early exits from accumulative distance function calls tend to be a good thing.
+        if (h<0.001 || dist > end) break; 
+    }
+
+    // I've added 0.3 to the final shade value, which lightens the shadow a bit. It's a preference thing. Really dark shadows look 
+    // too brutal to me.
+    return min(max(shade, 0.) + 0.3, 1.0); 
+}
+
+vec3 lighting( vec3 sp, vec3 camPos, int reflectionPass){
+
+    // Start with black.
+    vec3 sceneColor = vec3(0.0);
+
+    // Object's color.
+    vec3 objColor = vec3(1.0);
+     
+    float bf = bumpFunction(sp); // I'd normally pass this in to the bump function, but I can spare the cycles, so here's a wasteful reuse.
+    
+    // This little bit is worth noting. Sometimes I like to accentuate the bump map effect by directly coloring the object with 
+    // the bump map function. It's almost standard when using textures, but people seem to leave it out when using their own
+    // bump mapping functions. Not sure why. Anyway, comment it out to see the subtle difference.
+    objColor *= (0.5+0.5*bf);
+    
+
+    // The following few line gives the structure its color (not to be confused with hilighting and shade). Most of it is made up, but 
+    // basically, we make the darker half grey and color the lighter half to give the illusion of lights. It works in tandem with
+    // the Voronoi algorithm defined in the "bumpFunction" routine, so go there, if you're interested.
+    //
+    // Apologies for the "#ifdef" stuff in there. It makes things far less readable, but I wanted to show what the detailing looked
+    // like in it's more regular form. Comment out "#define ALIEN_LIGHTS" at the beginning of the shader, if you'd like to see a "less
+    // pimped out" version. :)
+    
+    vec3 lCol; // Lattice coloring.
+    
+    #ifdef ALIEN_LIGHTS
+    float c = tetraVoronoi(sp*3.);
+    
+    if((c>0.5)){
+        
+        vec3 voxPos = mod(sp*0.5, 1.0);
+        // Light coloring, which is dependent on which cell (voxPos) we're in. 
+        lCol = vec3(0.2+0.2*sin(voxPos.y*PI), 0.4+0.4*sin(voxPos.x*PI), 0.5+0.5*sin(voxPos.z*PI));
+        // This line controls the blinking lights. Very crude, but it'll do.
+        lCol *= clamp(sin(sp.x*PI*0.5+time*3.1)*cos(sp.y*PI+time*4.2)*sin(sp.z*PI+time*2.3)*4., 0., 2.);
+        
+    }
+    else {
+    
+        //float checkSize = 32.0;
+        //lCol = vec3(min(c+0.5, 1.));
+        //if ( mod(floor(checkSize * sp.x) + floor(checkSize * sp.y) + floor(checkSize *sp.z), 2.0) < 1.0 ) lCol *= 1.25;
+        
+        // Wasting some cyles by putting a little extra Voronoi pattern detail on the grey part of the lattice.
+        lCol = vec3(min(c+0.5, 1.))*vec3(1.0, 0.985, 0.96);
+        lCol *= (1.-sqrt(tetraVoronoi(sp*18.))*0.5+0.5);
+
+    }
+    #else
+        float c = bf;
+        lCol = vec3(min(c+0.75, 1.))*vec3(1.0, 0.985, 0.96);
+        lCol *= (1.-sqrt(tetraVoronoi(sp*20.))*0.5+0.5);    
+    #endif
+    
+   
+    objColor = clamp(objColor*lCol, 0.0, 1.0);
+    
+    //objColor *= smoothstep(0.0, 0.01, c-0.03); // Edge enhancement. Not that great here.
+    
+
+
+    // Obtain the surface normal at the scene position "sp."
+    surfNormal = getNormal(sp);
+    
+    // Bumpmapping the surface nomral. Note that we don't bother with this during the reflection pass, which is not entirely accurate, but not 
+    // all that noticable. It can also save the GPU some extra calculations. The minor imperfection, as it stands, for those with a keen eye, 
+    // is that the reflected objects are just regular objects sans bump mapped details. "OMG! Send that kid back to raytracing school." :) 
+    // Either way, if you have a decent setup... or are doing this from the future on an Alienware Quantum-Biocomputer, feel free to take out
+    // the "if" statement, and you'll see the bump mapping details in the reflections also. 
+    //
+    // The bump mapping effect is pretty dramatic, in this particular case. Comment out the line below, to see the difference.
+    if (reflectionPass==0)surfNormal = doBumpMap(sp, surfNormal, 0.05); //Bump factor changes with detail. Usually, the more detail an image has, the less bump it will need.
+
+    
+    // Lighting.
+
+    // lp - Light position. Keeping it in the vacinity of the camera, but away from the objects in the scene.
+    //lp = vec3(camPos.x, 0.75, camPos.z);
+    // ld - Light direction.
+    vec3 ld = lp-sp;
+    // lcolor - Light color.
+    vec3 lcolor = vec3(1.,0.97,0.92);
+    
+     // Light falloff (attenuation).
+    float len = length( ld ); // Distance from the light to the surface point.
+    ld /= len; // Normalizing the light-to-surface, aka light-direction, vector.
+    float lightAtten = min( 1.0 / ( 0.25*len*len ), 1.0 ); // Keeps things between 0 and 1.   
+    
+
+    // Obtain the reflected vector at the scene position "sp."
+    ref = reflect(-ld, surfNormal);
+    
+    // Shadows can be expensive, so although not entirely accurate, I leave this out of the refection lighting. Hence the "if" statement.
+    float shadowcol = 1.0;
+    if (reflectionPass==0)shadowcol=softShadow(sp, ld, stopThreshold*2.0, len, 32.0); // Be careful not to let the ray hit the object upon initiation.
+    
+    // Ambient occlusion. It's subtle for this particular scene, but can be great under the right circumstances. I'll explain it later.
+    float ao = 0.5+0.5*calculateAO(sp, surfNormal); // Ambient occlusion.
+
+    float ambient = .1; //The object's ambient property.
+    float specularPower = 8.0; // The power of the specularity. Higher numbers can give the object a harder, shinier look.
+    float diffuse = max( 0.0, dot(surfNormal, ld) ); //The object's diffuse value.
+    float specular = max( 0.0, dot( ref, normalize(camPos-sp)) ); //The object's specular value.
+    specular = pow(specular, specularPower); // Ramping up the specular value to the specular power for a bit of shininess.
+    
+    	
+    // Bringing all the lighting components togethr to color the screen pixel.
+    sceneColor += (objColor*(diffuse*0.8+ambient)+specular*0.5)*lcolor*lightAtten*shadowcol*ao;
+     
+    return sceneColor;
+
+}
+
+
+void main(void) {
+
+
+    // Setting up our screen coordinates.
+	vec2 uv = (2.0*gl_FragCoord.xy-resolution.xy)/resolution.y;
+
+
+	// Camera Setup.
+	
+	// Camera movement. Still not my best work, and again, there are better ways to do this, but at least it gives the viewer a bit of a look around the scene. 
+	// You could almost ignore the following. It's a mixture of common sense and trial-and-error. Basically, you send the look-at-position along the z-axis using
+	// the "time" variable, whilst keeping the camera close behind.
+	float rad = 0.5;
+	lookAt = vec3(0., 0., time);;  // This is the point you look towards, or at, if you prefer.
+	//camPos = vec3(1.32*sin(PI*time/8.), 0., -1.0+time); // This is the point you look from, or camera you look at the scene through. Whichever way you wish to look at it.
+	camPos = vec3(1.32*sin(PI*time/8.), 0., -1.0+time); // Different camera. Perhaps a bit too much movement.
+     
+    // lp - Light position. You'll note that I've made it global, because it's also used in the light function. I find it easier to keep it near the camera setup, but 
+    // that's a preference thing. You could put it back in the light function. I'm placing the light in the vacinity of the camera, but away from the objects in the scene.
+    lp = vec3(camPos.x, camPos.y+1.0, camPos.z);
+
+    vec3 forward = normalize(lookAt-camPos); // Forward vector.
+    vec3 right = normalize(vec3(forward.z, 0., -forward.x )); // Right vector... or is it left? Either way, so long as the correct-facing up-vector is produced.
+    vec3 up = normalize(cross(forward,right)); // Cross product the two vectors above to get the up vector.
+     
+    // FOV - Field of view.
+    float FOV = 0.5;
+    
+    // ro - Ray origin.
+    vec3 ro = camPos; 
+    // rd - Ray direction.
+    vec3 rd = normalize(forward + FOV*uv.x*right + FOV*uv.y*up);
+    //vec3 eye = normalize(vec3(uv,1.0-dot(uv,uv)*0.5));
+    //rd.z = (1.-dot(rd.xy, rd.xy));
+    //normalize(rd);
+
+    // Above, you can see that we have a look-at position, and a camera that, um, looks at it. Usually, those two alone can allow you to move through the scene
+    // with enough variation. However, sometimes it's nice to be able to swivel the screen around on the spot... for want of a better description. You can achieve 
+    // this by rotating the normalized ray-direction vector (after it's constructed).
+    //
+    // If you wanted to, you could isolate the effect below by setting the x and y positions in the "lookAt" and "camPos" vectors above to zero.
+	//rd.xy *= rot2( PI*sin(-time*0.5)/4.0 );
+	//rd.yz *= rot2( PI*sin(-time*0.25)/6.0 );
+	rd.xy *= rot2( PI*sin(-PI*time/8.)/6.0 );
+	
+	//rd.xy *= rot2( PI*sin(time*0.25)/6.0 );
+	//rd.yz *= rot2( PI*sin(-time*0.25)/16.0 );
+	//rd.xz *= rot2( time*0.25 );
+    
+
+	// The screen's background color.
+    vec3 bgcolor = vec3(0.);
+
+	
+	// Ray marching.
+	const float clipNear = 0.0;
+	const float clipFar = 16.0;
+	float dist = rayMarching(ro, rd, clipNear, clipFar );
+	if ( dist >= clipFar ) {
+	    // I prefer to do it this way in order to avoid an if-statement below, but I honestly couldn't say whether it's more
+	    // efficient. It feels like it would be. Does that count? :)
+	    gl_FragColor = vec4(bgcolor, 1.0);
+	    return;
+		//discard; // If you want to return without rendering anything, I think.
+	}
+	
+	// sp - Surface position. If we've made it this far, we've hit something.
+	vec3 sp = ro + rd*dist;
+	
+	// Light the pixel that corresponds to the surface position. The last value "0" tells the lighting function whether to include
+	// shadows, or not. Shadows can be expensive, so I tend not to include them on the original pass, and not include them during
+	// the reflection pass, which is slightly less accurate, but not really noticable.
+	vec3 sceneColor = lighting( sp, camPos, 0);
+	
+	#ifdef REFLECTION
+	// Reflection
+	
+	// We've completed the first surface collision pass, so now we can begin the reflected ray pass. It's done in the same way
+	// as above, except that our origin is now the point on the surface of the object we've just hit (sp), and the ray direction
+	// (rd) is simply the reflected ray (ref).
+	dist = rayMarchingReflections(sp, reflect(rd, surfNormal), stopThreshold*5.0, clipFar );
+	vec3 rsp = sp + ref*dist;
+	
+	if ( dist >= clipFar ) {
+	    // It'd look cleaner, if I simply changed the sign above, and put the lighting portion in here, but I'm under the 
+	    // impression that GPUs aren't fond of nesting, so I'm doing it in a less tidy way.
+	    gl_FragColor = vec4(clamp(sceneColor, 0.0, 1.0), 1.0);
+	    return;
+	}
+	
+	
+	// The reflected ray hit something, so light the "reflected" pixel that corresponds to the "reflected" surface position.
+	// The last entry "1" tells the lighting function to not include shadows, which are less important during a reflection pass.
+    float refCoef = 0.35; // Reflective coefficient. The amount of reflected light we wish to incorporate into the final color.
+    sceneColor += lighting( rsp, sp, 1)*refCoef;
+    #endif
+
+    // Clamping the lit pixel, then put it on the screen.
+	gl_FragColor = vec4(clamp(sceneColor, 0.0, 1.0), 1.0);
+	
+}
+
+</script>
+</head>
+<body>
+
+<canvas id="canvas" width="1920" height="1080"></canvas>
+</body></html>
