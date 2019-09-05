@@ -254,6 +254,8 @@ void main() {
 
 <!-- ShaderToy Fragment Shader! -->
 <script id="2d-fragment-shader" type="x-shader/x-fragment">
+    #define AA 2
+    
     float smin(in float a, in float b, float k)
     {
         float h = max(k-abs(a-b), 0.0);
@@ -343,8 +345,20 @@ void main() {
     }
     void mainImage( out vec4 fragColor, in vec2 fragCoord )
     {
-      vec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;
       float an = iMouse.x/iResolution.x*6.28;
+    
+      vec3 tot = vec3(0.0);
+        
+      #if AA>1
+      for( int m=0; m<AA; m++ )
+      for( int n=0; n<AA; n++ )
+      {
+          // pixel coordinates
+          vec2 o = vec2(float(m),float(n)) / float(AA) - 0.5;
+          vec2 p = (-iResolution.xy + 2.0*(fragCoord+o))/iResolution.y;
+          #else    
+          vec2 p = (-iResolution.xy + 2.0*fragCoord)/iResolution.y;
+          #endif
         
       // ray origin (camera)
       vec3 ro = vec3(1.0*sin(an), 0.0, 1.0*cos(an));
@@ -418,9 +432,14 @@ void main() {
       }
       // some kind of colour correction
       col = pow(col, vec3(0.4545));
+      tot += col;
+      #if AA>1
+      }
+      tot /= float(AA*AA);
+      #endif
         
       // Output to screen
-      fragColor = vec4(col,1.0);
+      fragColor = vec4( tot, 1.0 );
     }
 </script>
 </head>
