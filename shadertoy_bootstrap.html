@@ -28,10 +28,11 @@ function moveMove(e) {
     mouseY = e.pageY;
 }
 
-// Function that grabs a shader stored as a page script
-// and compiles it based on the MIME type.
-// http://learningwebgl.com/
-function getShader(gl, id) {
+function getShaderType(id) {
+    return document.getElementById(id).type;
+}
+
+function getShaderCode(id) {
       var shaderScript = document.getElementById(id);
       if (!shaderScript) {
           return null;
@@ -44,17 +45,23 @@ function getShader(gl, id) {
               str += k.textContent;
           k = k.nextSibling;
       }
+      return str;
+}
 
+// Function that grabs a shader stored as a page script
+// and compiles it based on the MIME type.
+// http://learningwebgl.com/
+function compileShader(gl, code, type) {
       var shader;
-      if (shaderScript.type == "x-shader/x-fragment") {
+      if (type == "x-shader/x-fragment") {
           shader = gl.createShader(gl.FRAGMENT_SHADER);
-      } else if (shaderScript.type == "x-shader/x-vertex") {
+      } else if (type == "x-shader/x-vertex") {
           shader = gl.createShader(gl.VERTEX_SHADER);
       } else {
           return null;
       }
 
-      gl.shaderSource(shader, str);
+      gl.shaderSource(shader, code);
       gl.compileShader(shader);
 
       if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
@@ -87,12 +94,16 @@ function main() {
     gl.getExtension('OES_standard_derivatives'); 
 
     // Setup GLSL program.
-
     // Make the shaders.
     // The getShader function runs the compiler.	
-    var vertexShader = getShader(gl, "2d-vertex-shader");
-    var fragmentShader = getShader(gl, "2d-fragment-shader");
+    var vertexShader = compileShader(gl,  getShaderCode("2d-vertex-shader"), getShaderType("2d-vertex-shader"));
 
+    var fragHeader = getShaderCode("shadertoy-header");
+    var fragFooter = getShaderCode("shadertoy-footer");
+    var fragCode = fragHeader + getShaderCode("2d-fragment-shader") + fragFooter;
+    console.log(fragCode);
+
+    var fragmentShader = compileShader(gl, fragCode, getShaderType("2d-fragment-shader"));
 
     var program = gl.createProgram();
 
@@ -223,22 +234,26 @@ void main() {
    gl_Position = vec4(a_position, 0, 1);
 }
 </script>
-<!-- Fragment Shader -->
+
+<script id="shadertoy-header" type="x-shader/x-fragment">
+    //#extension GL_OES_standard_derivatives : enable
+    #ifdef GL_ES
+    precision mediump float;
+    #endif
+
+    uniform float iTime;
+    uniform vec2 iResolution;
+    uniform vec4 iMouse;
+</script>
+
+<script id="shadertoy-footer" type="x-shader/x-fragment">
+    void main() {
+        mainImage(gl_FragColor, gl_FragCoord.xy); 
+    }
+</script>
+
+<!-- ShaderToy Fragment Shader! -->
 <script id="2d-fragment-shader" type="x-shader/x-fragment">
-//#extension GL_OES_standard_derivatives : enable 
-
-#ifdef GL_ES
-precision mediump float;
-#endif
-
-uniform float iTime;
-uniform vec2 iResolution;
-uniform vec4 iMouse;
-
-/*************************************************************************************************************
-    PASTE SHADER TOY CODE HERE
- ************************************************************************************************************/
-
  float sdGuy(in vec3 pos)
  {
     float t = fract(iTime);
@@ -308,19 +323,7 @@ uniform vec4 iMouse;
    // Output to screen
    fragColor = vec4(col,1.0);
  }
-
-/*************************************************************************************************************
-    END SHADER TOY CODE HERE
- ************************************************************************************************************/
-
-
-void main() {
-    mainImage(gl_FragColor, gl_FragCoord.xy);
-}
-
 </script>
 </head>
-<body>
-
-<canvas id="canvas" width="1920" height="1080"></canvas>
-</body></html>
+<body><canvas id="canvas" width="1920" height="1080"></canvas></body>
+</html>
