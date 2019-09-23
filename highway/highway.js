@@ -38,10 +38,32 @@ var fragmentShaderText = `
 #define onetwenty    2.094395
 //-------------------------------------------------
 
+vec2 hash( vec2 p ) // replace this by something better
+{
+	p = vec2( dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)) );
+	return -1.0 + 2.0*fract(sin(p)*43758.5453123);
+}
+
 //note: uniformly distributed, normalized rand, [0;1[
 float nrand( vec2 n )
 {
 	return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453);
+}
+
+float noise( in vec2 p )
+{
+    const float K1 = 0.366025404; // (sqrt(3)-1)/2;
+    const float K2 = 0.211324865; // (3-sqrt(3))/6;
+
+	vec2  i = floor( p + (p.x+p.y)*K1 );
+    vec2  a = p - i + (i.x+i.y)*K2;
+    float m = step(a.y,a.x); 
+    vec2  o = vec2(m,1.0-m);
+    vec2  b = a - o + K2;
+	vec2  c = a - 1.0 + 2.0*K2;
+    vec3  h = max( 0.5-vec3(dot(a,a), dot(b,b), dot(c,c) ), 0.0 );
+	vec3  n = h*h*h*h*vec3( dot(a,hash(i+0.0)), dot(b,hash(i+o)), dot(c,hash(i+1.0)));
+    return dot( n, vec3(70.0) );
 }
 
 //-------------------------------------------------
@@ -84,7 +106,7 @@ float sdBox( vec3 p, vec3 b )
 float elCylinder( in vec3 pos ) {
 
     vec3 q = pos;  
-    vec4 w = opElongate( q, vec3(3,0.0,3) );
+    vec4 w = opElongate( q, vec3(4.8,0.0,4.8) );
     return opRound( w.w+sdCappedCylinder( w.xyz, vec2(0.4,0.02) ), 0.04);
 }
 
@@ -98,8 +120,8 @@ float n1rand( vec2 n )
 float opRep( in vec3 p, in vec3 c )
 {
     vec3 q = mod(p,c)-0.5*c;
-    float h = nrand( q.xy );
-    vec3 b = vec3(2.5, 0.4 + h, 2.5);
+    float h = noise( floor( p.xz * 0.7 + 0.5 ) * 5.0 );
+    vec3 b = vec3(4.5, 0.4 + h * 5.0, 4.5);
     float d = opUnion(elCylinder( q ) , sdBox(q, b) );
     return d;
 }
@@ -120,7 +142,7 @@ vec2 map(in vec3 pos)
     // many elongated cylinder
     {
         vec3 p = pos - vec3(-1.0,0.0,1.0);  
-        vec3 c = vec3(8, 0, 8);
+        vec3 c = vec3(12, 0, 12);
         o2.x = opRep(p, c);
         o2.y = 0.5;
     }
@@ -177,17 +199,18 @@ vec2 map(in vec3 pos)
  {
    vec2 p = (2.0*fragCoord-iResolution.xy)/iResolution.y;
    float an = iMouse.x/iResolution.x*6.28;
+   float va = iMouse.y/iResolution.y*4.0;
 
-   //vec3 ro = vec3(1.0*sin(an), 0.0, 1.0*cos(an));
+   vec3 ro = vec3(1.0*sin(an), 2.0, 1.0*cos(an));
 
-   vec3 ro = vec3(0.0,3.0,6.0);
-   vec3 rd = normalize(vec3(p-vec2(0.0,1.0),-2.0));
+   //vec3 ro = vec3(0.0,3.0,6.0);
+   //vec3 rd = normalize(vec3(p-vec2(0.0,1.0),-2.0));
 
-   vec3 ta = vec3(0.0,0.0,0.0);
+   vec3 ta = vec3(0.0,va,0.0);
    vec3 ww = normalize(ta-ro);
    vec3 uu = normalize(cross(ww, vec3(0,1,0)));
    vec3 vv = normalize(cross(uu, ww));
-   //vec3 rd = normalize(vec3(p.x * uu + p.y*vv +1.5*ww));
+   vec3 rd = normalize(vec3(p.x * uu + p.y*vv +1.5*ww));
 
    vec3 col = vec3(0.35, 0.45, 1.0) - 0.7*rd.y;
    col = mix(col, vec3(0.7,0.75,0.8), exp(-10.0*rd.y));
