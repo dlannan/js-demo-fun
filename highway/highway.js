@@ -50,20 +50,18 @@ float nrand( vec2 n )
 	return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453);
 }
 
-float noise( in vec2 p )
-{
-    const float K1 = 0.366025404; // (sqrt(3)-1)/2;
-    const float K2 = 0.211324865; // (3-sqrt(3))/6;
+// Gold Noise ©2015 dcerisano@standard3d.com 
+//  - based on the Golden Ratio, PI and Square Root of Two
+//  - superior distribution
+//  - fastest noise generator function
+//  - works with all chipsets (including low precision)
 
-	vec2  i = floor( p + (p.x+p.y)*K1 );
-    vec2  a = p - i + (i.x+i.y)*K2;
-    float m = step(a.y,a.x); 
-    vec2  o = vec2(m,1.0-m);
-    vec2  b = a - o + K2;
-	vec2  c = a - 1.0 + 2.0*K2;
-    vec3  h = max( 0.5-vec3(dot(a,a), dot(b,b), dot(c,c) ), 0.0 );
-	vec3  n = h*h*h*h*vec3( dot(a,hash(i+0.0)), dot(b,hash(i+o)), dot(c,hash(i+1.0)));
-    return dot( n, vec3(70.0) );
+float PHI = 1.61803398874989484820459 * 00000.1; // Golden Ratio   
+float PI  = 3.14159265358979323846264 * 00000.1; // PI
+float SQ2 = 1.41421356237309504880169 * 10000.0; // Square Root of Two
+
+float gold_noise(in vec2 coordinate, in float seed){
+    return fract(tan(distance(coordinate*(seed+PHI), vec2(PHI, PI)))*SQ2);
 }
 
 //-------------------------------------------------
@@ -120,8 +118,7 @@ float n1rand( vec2 n )
 float opRep( in vec3 p, in vec3 c )
 {
     vec3 q = mod(p,c)-0.5*c;
-    float h = noise( floor( p.xz * 0.7 + 0.5 ) * 5.0 );
-    vec3 b = vec3(4.5, 0.4 + h * 5.0, 4.5);
+    vec3 b = vec3(4.5, 3.0, 4.5);
     float d = opUnion(elCylinder( q ) , sdBox(q, b) );
     return d;
 }
