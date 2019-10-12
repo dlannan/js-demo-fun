@@ -33,7 +33,6 @@ var shaderToyfooter = `
 
 //<!-- ShaderToy Fragment Shader! -->
 var fragmentShaderText = `
-
 //-------------------------------------------------
 #define onetwenty    2.094395
 //-------------------------------------------------
@@ -66,7 +65,11 @@ float gold_noise(in vec2 coordinate, in float seed){
 
 //-------------------------------------------------
 
+float dot2(in vec2 v ) { return dot(v,v); }
+
 float opUnion( float d1, float d2 ) {  return min(d1,d2); }
+
+float opSubtraction( float d1, float d2 ) { return max(-d1,d2); }
 
 vec4 opElongate( in vec3 p, in vec3 h )
 {
@@ -76,11 +79,31 @@ vec4 opElongate( in vec3 p, in vec3 h )
     return vec4( max(q,0.0), min(max(q.x,max(q.y,q.z)),0.0) );
 }
 
+
+float sdTriPrism( vec3 p, vec2 h )
+{
+    vec3 q = abs(p);
+    return max(q.z-h.y,max(q.x*0.866025+p.y*0.5,-p.y)-h.x*0.5);
+}
+
 float sdCappedCylinder( vec3 p, vec2 h )
 {
   vec2 d = abs(vec2(length(p.xz),p.y)) - h;
   return min(max(d.x,d.y),0.0) + length(max(d,0.0));
 } 
+
+float sdCone( in vec3 p, in vec2 c )
+{
+    // c is the sin/cos of the angle
+    float q = length(p.xy);
+    return dot(c,vec2(q,p.z));
+}
+
+float opElongateCyl( in vec3 p, in vec3 h, vec2 hr )
+{
+    vec3 q = abs(p)-h;
+    return sdCone( q, hr );// + min(max(q.x,max(q.y,q.z)),0.0);
+}
 
 float sdPlane( vec3 p, vec4 n )
 {
@@ -108,6 +131,11 @@ float elCylinder( in vec3 pos ) {
     return opRound( w.w+sdCappedCylinder( w.xyz, vec2(0.4,0.02) ), 0.04);
 }
 
+float opRoundCylinder( in vec3 p, in vec2 h, float rad )
+{
+    return sdCappedCylinder(p, h) - rad;
+}
+
 float n1rand( vec2 n )
 {
 	float t = fract( iTime );
@@ -115,11 +143,94 @@ float n1rand( vec2 n )
 	return nrnd0;
 }
 
+float opRepLim( in vec3 p )
+{
+    vec3 c = vec3(2.4, 0, 2.4);  // Steps
+    vec3 l = vec3(1.6, 1, 1.6);  // Limiter
+    vec3 val = c*clamp(floor(p/c) + 0.5,-l,l);
+    vec3 q = p-val;
+    float off = nrand( (val.xz / c.xz) );
+    vec3 b = vec3(0.85, off + 0.5, 0.85);
+    return sdBox( q, b );        // Repeating a limited number of boxes.
+}
+
+float sdCapsule( vec3 p, vec3 a, vec3 b, float r )
+{
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );
+    return length( pa - ba*h ) - r;
+}
+
+float sdVerticalCapsule( vec3 p, float h, float r )
+{
+    p.y -= clamp( p.y, 0.0, h );
+    return length( p ) - r;
+}
+
+float sdCappedCone( in vec3 p, in float h, in float r1, in float r2 )
+{
+    vec2 q = vec2( length(p.xz), p.y );
+    
+    vec2 k1 = vec2(r2,h);
+    vec2 k2 = vec2(r2-r1,2.0*h);
+    vec2 ca = vec2(q.x-min(q.x,(q.y<0.0)?r1:r2), abs(q.y)-h);
+    vec2 cb = q - k1 + k2*clamp( dot(k1-q,k2)/dot2(k2), 0.0, 1.0 );
+    float s = (cb.x<0.0 && ca.y<0.0) ? -1.0 : 1.0;
+    return s*sqrt( min(dot2(ca),dot2(cb)) );
+}
+
+float tpole1( in vec3 p, in vec3 c, in vec2 dir ) {
+    vec3 np = p+c;
+    float q = sdVerticalCapsule(np, 1.0, 0.02 );
+    float s = sdCapsule(np, vec3(0.0, 1.0, 0), vec3(dir.x, 1.0, dir.y) , 0.02);
+    return opUnion( q, s );
+}
+
+float curb( in vec3 p ) {
+
+    float tp1 = tpole1( p, vec3(5.0, 0.0, 5.0), vec2(0.0, -0.4) );
+    float tp2 = tpole1( p, vec3(5.0, 0.0, -5.0), vec2(-0.4, 0.0) );
+    float q = opUnion(tp1 , tp2);
+    float tp3 = tpole1( p, vec3(-5.0, 0.0, 5.0), vec2(0.4, 0.0) );
+    q = opUnion(q , tp3);
+    float tp4 = tpole1( p, vec3(-5.0, 0.0, -5.0), vec2(0.0, 0.4) );
+    q = opUnion(q , tp4);
+    q = opUnion(q , sdCappedCone(p + vec3( 5.1, 0.0, 3.0 ), 0.2, 0.06, 0.07 ));
+    q = opUnion(q , sdCappedCone(p + vec3( -5.1, 0.0, -3.0 ), 0.2, 0.06, 0.07 ));
+    q = opUnion(q , sdCappedCone(p + vec3( -3.0, 0.0, 5.1 ), 0.2, 0.06, 0.07 ));
+    q = opUnion(q , sdCappedCone(p + vec3( 3.0, 0.0, -5.1 ), 0.2, 0.06, 0.07 ));
+    return opUnion( q, elCylinder(p) );
+}
+
+float wheel( in vec3 p, float r ) {
+    return opRoundCylinder( p.yzx + vec3(-0.1, 0.0, 0.0), vec2(r, 0.01), 0.01);
+}
+
+float fourwheels( in vec3 p, float r) {
+    float d = wheel(p + vec3(0.25, 0.0, 0.2), r);
+    d = opUnion(d, wheel(p + vec3(0.25, 0.0, -0.2), r));
+    d = opUnion(d, wheel(p + vec3(-0.25, 0.0, -0.2), r));
+    d = opUnion(d, wheel(p + vec3(-0.25, 0.0, 0.2), r));
+    return d;
+}
+
+// Make a car from csg :)
+float car( in vec3 p, in float r ) {
+    // Wheels
+	float d = fourwheels( p, 0.05 );
+    float e = opRound( sdBox( p + vec3(0.0, -0.14, 0.0), vec3(0.35, 0.06, 0.18)), 0.03);
+    e = opSubtraction(fourwheels( p, 0.06 ), e);
+    d = opUnion( d, e );
+    float f = opRound( sdBox( p + vec3(0.0, -0.24, 0.0), vec3(0.20, 0.06, 0.17)), 0.03);
+    d = opUnion( d, f );
+    return d;
+}
+
 float opRep( in vec3 p, in vec3 c )
 {
     vec3 q = mod(p,c)-0.5*c;
-    vec3 b = vec3(4.5, 3.0, 4.5);
-    float d = opUnion(elCylinder( q ) , sdBox(q, b) );
+    float d = opUnion(curb(q) , opRepLim(q) );
+    d = opUnion( car(q + vec3(5.5, 0.0, 5.5), 0.0), d);
     return d;
 }
 
@@ -138,7 +249,7 @@ vec2 map(in vec3 pos)
 
     // many elongated cylinder
     {
-        vec3 p = pos - vec3(-1.0,0.0,1.0);  
+        vec3 p = pos - vec3(-1.0, -0.03, 1.0);  
         vec3 c = vec3(12, 0, 12);
         o2.x = opRep(p, c);
         o2.y = 0.5;
